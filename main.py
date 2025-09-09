@@ -9,8 +9,8 @@ from PyQt6.QtCore import (
     Qt, QUrl, QModelIndex, QStandardPaths
 )
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
-from mutagen.mp3 import MP3
-from mutagen.id3 import ID3NoHeaderError
+from mutagen import File
+from mutagen.flac import FLAC
 from models import Song, SongListModel
 from delegates import PowerampLikeDelegate
 
@@ -33,7 +33,7 @@ class MusicPlayer(QMainWindow):
         self.media_player.durationChanged.connect(self.update_duration)
 
         self.init_ui()
-        self.scan_music_directory(os.path.join(os.getcwd(), "/mnt/hdd1tb/Music")) # Scan default 'music' folder
+        self.scan_music_directory(os.path.join(os.getcwd(), "/mnt/hdd1tb/ablume")) # Scan default 'music' folder
 
     def init_ui(self):
         central_widget = QWidget()
@@ -132,7 +132,7 @@ class MusicPlayer(QMainWindow):
             for file in files:
                 if file.lower().endswith(supported_extensions):
                     file_path = os.path.join(root, file)
-                    song_title, artist, album, duration, album_art_bytes = self.read_id3_tags(file_path)
+                    song_title, artist, album, duration, album_art_bytes = self.read_metadata(file_path)
                     song = Song(file_path, song_title, artist, album, duration, album_art_bytes)
                     self.playlist_songs.append(song)
                     self.song_list_model.add_song(song) # Add to the model for display
@@ -141,7 +141,7 @@ class MusicPlayer(QMainWindow):
         if self.playlist_songs:
             self.song_list_view.setCurrentIndex(self.song_list_model.index(0, 0)) # Select first song
 
-    def read_id3_tags(self, file_path):
+    def read_metadata(self, file_path):
         title = None
         artist = None
         album = None
@@ -149,27 +149,32 @@ class MusicPlayer(QMainWindow):
         album_art_bytes = None
 
         try:
-            audio = MP3(file_path)
+            audio = File(file_path, easy=True)
+            if audio is None:
+                # If mutagen can't read it, we'll just use the filename and return.
+                return title, artist, album, duration, album_art_bytes
+
             duration = audio.info.length
 
-            if 'TIT2' in audio.tags:
-                title = str(audio.tags['TIT2'])
-            if 'TPE1' in audio.tags:
-                artist = str(audio.tags['TPE1'])
-            if 'TALB' in audio.tags:
-                album = str(audio.tags['TALB'])
+            # Mutagen's easy interface provides a consistent way to access tags
+            if 'title' in audio:
+                title = audio['title'][0]
+            if 'artist' in audio:
+                artist = audio['artist'][0]
+            if 'album' in audio:
+                album = audio['album'][0]
 
-            # Extract album art (APIC frame)
-            if 'APIC:' in audio.tags:
-                apic = audio.tags['APIC:']
-                if apic.data:
-                    album_art_bytes = apic.data
-
-        except ID3NoHeaderError:
-            # Not an MP3 with ID3 tags, or malformed
-            pass
+            # For album art, we need to access the full object, not the "easy" one
+            audio_full = File(file_path)
+            if audio_full:
+                if isinstance(audio_full, FLAC) and audio_full.pictures:
+                    album_art_bytes = audio_full.pictures[0].data
+                elif 'APIC:' in audio_full: # For MP3
+                    album_art_bytes = audio_full['APIC:'].data
+                elif 'covr' in audio_full: # For M4A/MP4
+                    album_art_bytes = audio_full['covr'][0]
         except Exception as e:
-            print(f"Error reading ID3 tags for {file_path}: {e}")
+            print(f"Error reading metadata for {file_path}: {e}")
         
         return title, artist, album, duration, album_art_bytes
 
